@@ -1,3 +1,3 @@
 # ZS-Auto-Reload
-It prevents full reload, that's it
-made it because of skill issue
+It prevents full reload, that's it<br />
+made it because of skill issue>br /
