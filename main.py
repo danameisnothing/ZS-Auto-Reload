@@ -7,42 +7,133 @@ import cv2
 import numpy as np
 import keyboard
 import dxcam
+import pytesseract
+from concurrent import futures
+import Levenshtein
+import signal
 
 # Constants
-LOWER_RANGE_AMMO_VIS = np.array([0, 0, 0])
-# UPPER_RANGE_AMMO_VIS = np.array([25, 15, 255])
-UPPER_RANGE_AMMO_VIS = np.array([179, 7, 255])
-LOW_PIXEL_COMPENSATE_DURATION = 0.07 # a lazy fix for the weapon reloading after taking damage (the screen turned red), Don't set this value too high, otherwise it may miss a reload
-RELOAD_PIXEL_NUM_TRESHOLD = 240
+LOWER_RANGE_AMMO_VIS: np.ndarray = np.array([0, 0, 254])
+UPPER_RANGE_AMMO_VIS: np.ndarray = np.array([1, 1, 255])
+UPPER_RANGE_TEXT_THRESHOLD: np.ndarray = np.array([1, 1, 255])
+LOWER_RANGE_TEXT_THRESHOLD: np.ndarray = np.array([0, 0, 254])
+LOW_PIXEL_COMPENSATE_DURATION: float = 0.02 # a lazy fix for the weapon reloading after taking damage (the screen turned red), Don't set this value too high, otherwise it may miss a reload
+LOW_PIXEL_MAX_CONSECUTIVE_PRESS: int = 2
+THRESHOLD_WEAPONS: dict = {
+    "Bluesteel G18": 270,
+    "Flush PPSh-41": 350,
+    "Deagle .50": 100
+}
 
-def processScreenshot(img):
+def processScreenshot(img: np.ndarray, upper_threshold: np.ndarray, lower_threshold: np.ndarray) -> np.ndarray:
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, LOWER_RANGE_AMMO_VIS, UPPER_RANGE_AMMO_VIS)
+    mask = cv2.inRange(hsv, lower_threshold, upper_threshold)
     return mask
 
-reloadDebounce = False # false is not pressing, true is pressing
-screenX = pyautogui.size().width
-screenY = pyautogui.size().height
-lastReloadTick = time.time()
-screen = dxcam.create()
-screen.start(region=(screenX - 202, screenY - 72, (screenX - 202) + 180, (screenY - 72)+ 16), target_fps=60) # 1398, 828 on 1600 * 900
+def tess(img: np.ndarray) -> str:
+    res: str = pytesseract.image_to_string(img, config="--psm 7")
+    return res.strip()
 
+def captureSigint(sig, frame) -> None:
+    screen.stop()
+    cv2.destroyAllWindows()
+    exit(0)
+
+reloadDebounce: bool = False # false is not pressing, true is pressing
+screenX: int = pyautogui.size().width
+screenY: int = pyautogui.size().height
+lastReloadTick: float = time.time()
+consecutivePress: int = 0
+
+screen: dxcam.DXCamera = dxcam.create()
+screen.start(region=(1664, 925, 1901, 1058), target_fps=120) # 1398, 828 on 1600 * 900 | region=(1668, 1034, 1883, 1058) | region=(1668, 1034, 1693, 1058) | #-40 | 1668, 1034, 1883, 1058
+
+#lastTime: float = time.perf_counter()
+
+lastWeaponNameThread: None | futures.Future = None
+
+lastWeaponName: str = ""
+
+# The first press_and_release is called, the input is dropped?
+keyboard.press_and_release("F24")
+
+signal.signal(signal.SIGINT, captureSigint)
+#lastAmmoCountThread: None | futures.Future = None
 while True:
-    # now it has a dt of 0.03
-    ammoImg = screen.get_latest_frame()
-    ammoImgPixel = cv2.countNonZero(processScreenshot(ammoImg))
+    img = screen.get_latest_frame()
 
-    cv2.namedWindow("hsv_debug", cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty("hsv_debug", cv2.WND_PROP_TOPMOST, 1)
-    cv2.imshow("hsv_debug", processScreenshot(ammoImg))
-    cv2.waitKey(1)
+    weaponNameImgPixel = processScreenshot(img[:20, :], UPPER_RANGE_TEXT_THRESHOLD, LOWER_RANGE_TEXT_THRESHOLD)
+    ammoCountImgPixel = processScreenshot(img[40:96, :125], UPPER_RANGE_TEXT_THRESHOLD, LOWER_RANGE_TEXT_THRESHOLD)
+    ammoVisImgPixel = processScreenshot(img[110:, 4:220], UPPER_RANGE_AMMO_VIS, LOWER_RANGE_AMMO_VIS) # processScreenshot(img[108:, 4:220], UPPER_RANGE_AMMO_VIS, LOWER_RANGE_AMMO_VIS) # img[108:, 4:220] (original, full section, changed because the ammo text animation when shooting, scrolls down to this range, that could interfere with detection)
 
-    print("Ammo Pixel : " + str(ammoImgPixel))
-    if int(ammoImgPixel) < RELOAD_PIXEL_NUM_TRESHOLD and int(ammoImgPixel) > 0:
-        if not reloadDebounce and time.time() - lastReloadTick >= LOW_PIXEL_COMPENSATE_DURATION:
-            keyboard.press_and_release("R")
-            reloadDebounce = True
-    else:
-        lastReloadTick = time.time()
-        reloadDebounce = False
+    ammoVisPixelCount = cv2.countNonZero(ammoVisImgPixel)
     
+    if lastWeaponNameThread is None:
+        lastWeaponNameThread = futures.ThreadPoolExecutor().submit(tess, weaponNameImgPixel)
+    elif lastWeaponNameThread.running():
+        pass
+    else:
+        lastWeaponName = lastWeaponNameThread.result()
+        lastWeaponNameThread = None
+    
+    """if lastAmmoCountThread is None:
+        lastAmmoCountThread = futures.ThreadPoolExecutor().submit(tess, ammoCountImgPixel)
+    elif lastAmmoCountThread.running():
+        pass
+    else:
+        print(lastAmmoCountThread.result())
+        lastAmmoCountThread = None"""
+    
+    """bulletTypePixel = cv2.countNonZero(processScreenshot(bulletType))
+
+    if bulletTypePixel >= 150 and bulletTypePixel <= 160:
+        lastBulletType = "RIFLE"
+    elif bulletTypePixel >= 280 and bulletTypePixel <= 290:
+        lastBulletType = "PISTOL"
+    
+    match lastBulletType:
+        case "PISTOL":
+            RELOAD_PIXEL_NUM_TRESHOLD = 500
+        case "RIFLE":
+            RELOAD_PIXEL_NUM_TRESHOLD = 600
+        case _:
+            RELOAD_PIXEL_NUM_TRESHOLD = 500"""
+
+    """cv2.namedWindow("hsv_debug_weaponname", cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty("hsv_debug_weaponname", cv2.WND_PROP_TOPMOST, 1)
+    cv2.imshow("hsv_debug_weaponname", weaponNameImgPixel)
+
+    cv2.namedWindow("hsv_debug_ammocount", cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty("hsv_debug_ammocount", cv2.WND_PROP_TOPMOST, 1)
+    cv2.imshow("hsv_debug_ammocount", ammoCountImgPixel)
+
+    cv2.namedWindow("hsv_debug_ammovis", cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty("hsv_debug_ammovis", cv2.WND_PROP_TOPMOST, 1)
+    cv2.imshow("hsv_debug_ammovis", ammoVisImgPixel)
+
+    cv2.namedWindow("hsv_debug_bullettype", cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty("hsv_debug_bullettype", cv2.WND_PROP_TOPMOST, 1)
+    cv2.imshow("hsv_debug_bullettype", bulletType)
+    cv2.waitKey(5)"""
+
+    #print(f"Ammo Pixel : {ammoVisPixelCount}")
+    #print("Bullet Type Pixel : "+ str(bulletTypePixel) + ", BulletType : " + str(lastBulletType))
+    for base_weapons in THRESHOLD_WEAPONS.keys():
+        # Like this, because the skin name has more characters (e.g. "Galaxy G18".find("G18"))
+        if Levenshtein.distance(lastWeaponName, base_weapons) <= 3:
+            if int(ammoVisPixelCount) < THRESHOLD_WEAPONS.get(base_weapons) and int(ammoVisPixelCount) > 0:
+                if not reloadDebounce and time.time() - lastReloadTick >= LOW_PIXEL_COMPENSATE_DURATION:
+                    if consecutivePress <= LOW_PIXEL_COMPENSATE_DURATION:
+                        keyboard.press_and_release("R")
+                        reloadDebounce = True
+                        consecutivePress += 1
+                        print(f"Reloaded {base_weapons} with threshold {THRESHOLD_WEAPONS.get(base_weapons)}")
+            else:
+                lastReloadTick = time.time()
+                reloadDebounce = False
+                if consecutivePress - 1 >= 0:
+                    consecutivePress -= 1
+    
+    """time.sleep(0.01)
+    print(f"{1/(time.perf_counter() - lastTime)} fps")
+    lastTime = time.perf_counter()"""
