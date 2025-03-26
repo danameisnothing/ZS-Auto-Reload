@@ -22,7 +22,10 @@ LOW_PIXEL_MAX_CONSECUTIVE_PRESS: int = 2
 THRESHOLD_WEAPONS: dict = {
     "Bluesteel G18": 270,
     "Flush PPSh-41": 350,
-    "Deagle .50": 100
+    "Deagle .50": 100,
+    "Ice Deagle .50": 100,
+    "Ultimax 100": 70, # 63 or 126
+    "Cotton Candy HK21": 130
 }
 
 def processScreenshot(img: np.ndarray, upper_threshold: np.ndarray, lower_threshold: np.ndarray) -> np.ndarray:
@@ -59,6 +62,8 @@ keyboard.press_and_release("F24")
 
 signal.signal(signal.SIGINT, captureSigint)
 #lastAmmoCountThread: None | futures.Future = None
+
+print("Started")
 while True:
     img = screen.get_latest_frame()
 
